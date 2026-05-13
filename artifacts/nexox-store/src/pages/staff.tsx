@@ -10,6 +10,7 @@ type TicketDetail = Ticket & { messages: Message[] };
 type CustomOrder = { id: number; clientName: string; clientEmail: string; packageType: string; projectName: string; price: string; status: string; createdAt: string; logoBase64?: string; referenceBase64?: string };
 type ChatMsg = { id: number; senderType: string; senderName: string; message: string; createdAt: string };
 type OrderDetail = CustomOrder & { messages: ChatMsg[] };
+type FreeVerif = { id: number; token: string; username: string; printBase64: string; status: string; createdAt: string; reviewedAt: string | null; freeKey: string | null };
 
 function statusLabel(s: string) {
   if (s === "open") return { label: "Aberto", cls: "bg-blue-500/20 text-blue-400" };
@@ -121,18 +122,29 @@ function StaffAuth({ tab, setTab, onLogin }: { tab: "login" | "register"; setTab
 }
 
 function StaffDashboard({ staffUser }: { staffUser: StaffUser }) {
-  const [dashTab, setDashTab] = useState<"tickets" | "custom">("tickets");
+  const [dashTab, setDashTab] = useState<"tickets" | "custom" | "free">("tickets");
+
+  const tabs = [
+    { key: "tickets" as const, label: "Tickets de Suporte" },
+    { key: "free" as const, label: "Verificações Free" },
+    { key: "custom" as const, label: "Pedidos Custom" },
+  ];
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
         <h1 className="text-3xl font-black">Painel Staff</h1>
         <div className="flex rounded-2xl border border-white/10 bg-white/5 p-1 gap-1">
-          <button onClick={() => setDashTab("tickets")} className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all ${dashTab === "tickets" ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>Tickets de Suporte</button>
-          <button onClick={() => setDashTab("custom")} className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all ${dashTab === "custom" ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>Pedidos Custom</button>
+          {tabs.map((t) => (
+            <button key={t.key} onClick={() => setDashTab(t.key)} className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap ${dashTab === t.key ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}>
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
-      {dashTab === "tickets" ? <TicketsDashboard staffUser={staffUser} /> : <CustomOrdersDashboard staffUser={staffUser} />}
+      {dashTab === "tickets" && <TicketsDashboard staffUser={staffUser} />}
+      {dashTab === "custom" && <CustomOrdersDashboard staffUser={staffUser} />}
+      {dashTab === "free" && <FreeVerifDashboard staffUser={staffUser} />}
     </div>
   );
 }
@@ -265,6 +277,116 @@ function TicketsDashboard({ staffUser }: { staffUser: StaffUser }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function FreeVerifDashboard({ staffUser }: { staffUser: StaffUser }) {
+  const [verifs, setVerifs] = useState<FreeVerif[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+  const [expandedPrint, setExpandedPrint] = useState<string | null>(null);
+  const headers = { "x-staff-token": staffUser.token };
+
+  useEffect(() => { fetchVerifs(); }, []);
+
+  const fetchVerifs = async () => {
+    setLoading(true);
+    try { const res = await fetch(`${BASE()}/api/staff/free-verifications`, { headers }); if (res.ok) setVerifs(await res.json()); } finally { setLoading(false); }
+  };
+
+  const approve = async (id: number) => {
+    setMsg("");
+    try {
+      const res = await fetch(`${BASE()}/api/staff/free-verifications/${id}/approve`, { method: "PUT", headers });
+      if (res.ok) { setVerifs((prev) => prev.map((v) => v.id === id ? { ...v, status: "approved", reviewedAt: new Date().toISOString() } : v)); setMsg("✓ Aprovado com sucesso!"); }
+      else setMsg("Erro ao aprovar.");
+    } catch { setMsg("Erro ao aprovar."); }
+    setTimeout(() => setMsg(""), 4000);
+  };
+
+  const reject = async (id: number) => {
+    setMsg("");
+    try {
+      const res = await fetch(`${BASE()}/api/staff/free-verifications/${id}/reject`, { method: "PUT", headers });
+      if (res.ok) { setVerifs((prev) => prev.map((v) => v.id === id ? { ...v, status: "rejected", reviewedAt: new Date().toISOString() } : v)); setMsg("Verificação recusada."); }
+      else setMsg("Erro ao recusar.");
+    } catch { setMsg("Erro ao recusar."); }
+    setTimeout(() => setMsg(""), 4000);
+  };
+
+  const pendingCount = verifs.filter((v) => v.status === "pending").length;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-black mb-1">Verificações Free</h2>
+          <p className="text-zinc-400 text-sm">Prints de inscrição no canal aguardando liberação do CHEAT FREE.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {pendingCount > 0 && <span className="px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-400 text-sm font-bold">{pendingCount} pendente{pendingCount > 1 ? "s" : ""}</span>}
+          <button onClick={fetchVerifs} className="px-4 py-2 rounded-xl border border-white/10 hover:bg-white/10 transition text-sm">Atualizar</button>
+        </div>
+      </div>
+      {msg && <div className={`rounded-xl px-4 py-3 text-sm font-bold mb-4 ${msg.startsWith("✓") ? "bg-green-500/20 text-green-400 border border-green-500/20" : "bg-red-500/20 text-red-400 border border-red-500/20"}`}>{msg}</div>}
+      {loading ? <p className="text-zinc-400 text-sm">Carregando...</p> : verifs.length === 0 ? (
+        <div className="rounded-[28px] border border-white/10 bg-white/5 p-12 text-center text-zinc-500">Nenhuma verificação enviada ainda.</div>
+      ) : (
+        <div className="space-y-3">
+          {verifs.map((v) => {
+            const isPending = v.status === "pending";
+            const isApproved = v.status === "approved";
+            return (
+              <div key={v.id} className={`rounded-[24px] border p-5 ${isPending ? "border-yellow-500/30 bg-yellow-500/5" : isApproved ? "border-green-500/20 bg-green-500/5" : "border-white/10 bg-white/5 opacity-60"}`}>
+                <div className="flex items-start gap-5">
+                  <button
+                    onClick={() => setExpandedPrint(expandedPrint === v.token ? null : v.token)}
+                    className="shrink-0 w-20 h-20 rounded-xl overflow-hidden border border-white/20 hover:border-white/50 transition bg-zinc-900"
+                    title="Clique para ver o print"
+                  >
+                    <img src={v.printBase64} alt="print" className="w-full h-full object-cover" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="font-black">#{v.id} — {v.username}</span>
+                      <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${isPending ? "bg-yellow-500/20 text-yellow-400" : isApproved ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        {isPending ? "Pendente" : isApproved ? "Aprovado" : "Recusado"}
+                      </span>
+                    </div>
+                    <p className="text-zinc-500 text-xs">{new Date(v.createdAt).toLocaleString("pt-BR")}</p>
+                    {v.reviewedAt && <p className="text-zinc-600 text-xs">Revisado: {new Date(v.reviewedAt).toLocaleString("pt-BR")}</p>}
+                    {isApproved && v.freeKey && <p className="text-green-400 text-xs mt-1 font-mono font-bold">Key: {v.freeKey}</p>}
+                  </div>
+                  {isPending && (
+                    <div className="flex gap-2 shrink-0">
+                      <button onClick={() => approve(v.id)} className="px-4 py-2 rounded-xl bg-green-500 text-black font-black text-sm hover:bg-green-400 transition">✓ Aprovar</button>
+                      <button onClick={() => reject(v.id)} className="px-4 py-2 rounded-xl bg-red-500/20 text-red-400 border border-red-500/20 font-bold text-sm hover:bg-red-500/30 transition">Recusar</button>
+                    </div>
+                  )}
+                </div>
+                {expandedPrint === v.token && (
+                  <div className="mt-4 rounded-2xl overflow-hidden border border-white/20">
+                    <img src={v.printBase64} alt="print completo" className="w-full max-h-96 object-contain bg-zinc-900" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {expandedPrint && (() => {
+        const v = verifs.find((x) => x.token === expandedPrint);
+        if (!v) return null;
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setExpandedPrint(null)}>
+            <div className="relative max-w-2xl max-h-[90vh] rounded-2xl overflow-hidden border border-white/20 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <img src={v.printBase64} alt="print" className="w-full h-auto object-contain max-h-[85vh]" />
+              <button onClick={() => setExpandedPrint(null)} className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/70 text-white font-bold hover:bg-black/90 transition flex items-center justify-center">✕</button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -3,10 +3,14 @@ function crc16(str: string): string {
   for (let i = 0; i < str.length; i++) {
     crc ^= str.charCodeAt(i) << 8;
     for (let j = 0; j < 8; j++) {
-      crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+      if (crc & 0x8000) {
+        crc = ((crc << 1) ^ 0x1021) & 0xffff;
+      } else {
+        crc = (crc << 1) & 0xffff;
+      }
     }
   }
-  return ((crc & 0xffff) >>> 0).toString(16).toUpperCase().padStart(4, "0");
+  return (crc & 0xffff).toString(16).toUpperCase().padStart(4, "0");
 }
 
 function tlv(id: string, value: string): string {
@@ -41,7 +45,6 @@ export function generatePixPayload({
 
   const payload =
     tlv("00", "01") +
-    tlv("01", "11") +
     merchantAccountInfo +
     tlv("52", "0000") +
     tlv("53", "986") +

@@ -23,13 +23,15 @@ type CustomOrder = { id: number; clientName: string; clientEmail: string; packag
 type ChatMsg = { id: number; senderType: string; senderName: string; message: string; createdAt: string };
 type OrderDetail = CustomOrder & { messages: ChatMsg[] };
 
-type AdminTab = "keys" | "staff" | "coupons" | "downloads" | "compras" | "custom" | "pendentes";
+type AdminTab = "keys" | "staff" | "coupons" | "downloads" | "compras" | "custom" | "pendentes" | "free";
+type FreeVerif = { id: number; token: string; username: string; printBase64: string; status: string; createdAt: string; reviewedAt: string | null };
 type PendingPurchase = { id: number; token: string; buyerName: string; product: string; planId: string; planName: string; price: string; pixAmount: string; status: string; keyValue: string | null; createdAt: string; confirmedAt: string | null };
 
 const DOWNLOAD_PRODUCTS = [
-  { id: "rage", label: "RAGE PANEL" },
-  { id: "lite", label: "LITE PANEL" },
-  { id: "free", label: "CHEAT FREE" },
+  { id: "rage", label: "RAGE PANEL", placeholder: "https://drive.google.com/...", inputType: "url" },
+  { id: "lite", label: "LITE PANEL", placeholder: "https://drive.google.com/...", inputType: "url" },
+  { id: "free", label: "CHEAT FREE — Link de Download", placeholder: "https://drive.google.com/...", inputType: "url" },
+  { id: "free-key", label: "CHEAT FREE — Chave de Acesso", placeholder: "Ex: NEXOX-FREE-XXXX-XXXX", inputType: "text" },
 ];
 
 const statusLabel = (s: string) => {
@@ -54,7 +56,7 @@ export default function AdminPage() {
   const [couponsLoading, setCouponsLoading] = useState(false);
   const [couponForm, setCouponForm] = useState({ code: "", discountType: "percent", discountValue: "", maxUses: "" });
   const [couponMsg, setCouponMsg] = useState("");
-  const [downloads, setDownloads] = useState<Record<string, string>>({ rage: "", lite: "", free: "" });
+  const [downloads, setDownloads] = useState<Record<string, string>>({ rage: "", lite: "", free: "", "free-key": "" });
   const [dlMsg, setDlMsg] = useState("");
   const [customOrders, setCustomOrders] = useState<CustomOrder[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<OrderDetail | null>(null);
@@ -63,6 +65,10 @@ export default function AdminPage() {
   const [pendingPurchases, setPendingPurchases] = useState<PendingPurchase[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingMsg, setPendingMsg] = useState("");
+  const [freeVerifs, setFreeVerifs] = useState<FreeVerif[]>([]);
+  const [freeLoading, setFreeLoading] = useState(false);
+  const [freeMsg, setFreeMsg] = useState("");
+  const [expandedPrint, setExpandedPrint] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -114,6 +120,34 @@ export default function AdminPage() {
     } catch {} finally { setPendingLoading(false); }
   };
 
+  const fetchFreeVerifs = async () => {
+    setFreeLoading(true);
+    try {
+      const res = await fetch(`${BASE}/api/admin/free-verifications`, { headers });
+      if (res.ok) setFreeVerifs(await res.json());
+    } catch {} finally { setFreeLoading(false); }
+  };
+
+  const approveFreeVerif = async (id: number) => {
+    setFreeMsg("");
+    try {
+      const res = await fetch(`${BASE}/api/admin/free-verifications/${id}/approve`, { method: "PUT", headers });
+      if (res.ok) { setFreeVerifs((prev) => prev.map((v) => v.id === id ? { ...v, status: "approved", reviewedAt: new Date().toISOString() } : v)); setFreeMsg("✓ Aprovado!"); }
+      else setFreeMsg("Erro ao aprovar.");
+    } catch { setFreeMsg("Erro ao aprovar."); }
+    setTimeout(() => setFreeMsg(""), 4000);
+  };
+
+  const rejectFreeVerif = async (id: number) => {
+    setFreeMsg("");
+    try {
+      const res = await fetch(`${BASE}/api/admin/free-verifications/${id}/reject`, { method: "PUT", headers });
+      if (res.ok) { setFreeVerifs((prev) => prev.map((v) => v.id === id ? { ...v, status: "rejected", reviewedAt: new Date().toISOString() } : v)); setFreeMsg("Recusado."); }
+      else setFreeMsg("Erro ao recusar.");
+    } catch { setFreeMsg("Erro ao recusar."); }
+    setTimeout(() => setFreeMsg(""), 4000);
+  };
+
   const confirmPurchase = async (id: number) => {
     setPendingMsg("");
     try {
@@ -141,6 +175,7 @@ export default function AdminPage() {
     if (tab === "downloads") fetchDownloads();
     if (tab === "custom") fetchCustomOrders();
     if (tab === "pendentes") fetchPendingPurchases();
+    if (tab === "free") fetchFreeVerifs();
   }, [tab, authed]);
 
   useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [selectedOrder?.messages]);
@@ -261,8 +296,11 @@ export default function AdminPage() {
 
   const pendingCount = pendingPurchases.filter((p) => p.status === "pending").length;
 
+  const freePendingCount = freeVerifs.filter((v) => v.status === "pending").length;
+
   const TABS: { key: AdminTab; label: string; badge?: number }[] = [
     { key: "pendentes", label: "Compras Pendentes", badge: pendingCount },
+    { key: "free", label: "Verificações Free", badge: freePendingCount || undefined },
     { key: "keys", label: "Gerenciar Keys" },
     { key: "staff", label: "Gerenciar Staff" },
     { key: "coupons", label: "Cupons" },
@@ -369,6 +407,77 @@ export default function AdminPage() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tab === "free" && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-black mb-1">Verificações Free</h2>
+                    <p className="text-zinc-400 text-sm">Usuários que enviaram print da inscrição no canal para liberar o CHEAT FREE.</p>
+                  </div>
+                  <button onClick={fetchFreeVerifs} className="px-4 py-2 rounded-xl border border-white/10 hover:bg-white/10 transition text-sm">Atualizar</button>
+                </div>
+                {freeMsg && <div className={`rounded-xl px-4 py-3 text-sm font-bold ${freeMsg.startsWith("✓") ? "bg-green-500/20 text-green-400 border border-green-500/20" : "bg-red-500/20 text-red-400 border border-red-500/20"}`}>{freeMsg}</div>}
+                {freeLoading ? <p className="text-zinc-400">Carregando...</p> : freeVerifs.length === 0 ? (
+                  <div className="rounded-[28px] border border-white/10 bg-white/5 p-12 text-center text-zinc-500">Nenhuma verificação enviada ainda.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {freeVerifs.map((v) => {
+                      const isPending = v.status === "pending";
+                      const isApproved = v.status === "approved";
+                      return (
+                        <div key={v.id} className={`rounded-[24px] border p-5 ${isPending ? "border-yellow-500/30 bg-yellow-500/5" : isApproved ? "border-green-500/20 bg-green-500/5" : "border-white/10 bg-white/5 opacity-60"}`}>
+                          <div className="flex items-start gap-5">
+                            <button
+                              onClick={() => setExpandedPrint(expandedPrint === v.token ? null : v.token)}
+                              className="shrink-0 w-20 h-20 rounded-xl overflow-hidden border border-white/20 hover:border-white/50 transition bg-zinc-900 flex items-center justify-center"
+                              title="Ver print"
+                            >
+                              <img src={v.printBase64} alt="print" className="w-full h-full object-cover" />
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className="font-black">#{v.id} — {v.username}</span>
+                                <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${isPending ? "bg-yellow-500/20 text-yellow-400" : isApproved ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                                  {isPending ? "Pendente" : isApproved ? "Aprovado" : "Recusado"}
+                                </span>
+                              </div>
+                              <p className="text-zinc-500 text-xs">{new Date(v.createdAt).toLocaleString("pt-BR")}</p>
+                              {v.reviewedAt && <p className="text-zinc-600 text-xs mt-0.5">Revisado em {new Date(v.reviewedAt).toLocaleString("pt-BR")}</p>}
+                            </div>
+                            {isPending && (
+                              <div className="flex gap-2 shrink-0">
+                                <button onClick={() => approveFreeVerif(v.id)} className="px-4 py-2 rounded-xl bg-green-500 text-black font-black text-sm hover:bg-green-400 transition">
+                                  ✓ Aprovar
+                                </button>
+                                <button onClick={() => rejectFreeVerif(v.id)} className="px-4 py-2 rounded-xl bg-red-500/20 text-red-400 border border-red-500/20 font-bold text-sm hover:bg-red-500/30 transition">
+                                  Recusar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          {expandedPrint === v.token && (
+                            <div className="mt-4 rounded-2xl overflow-hidden border border-white/20">
+                              <img src={v.printBase64} alt="print completo" className="w-full max-h-96 object-contain bg-zinc-900" />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {expandedPrint && (
+                  <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setExpandedPrint(null)}>
+                    <div className="max-w-2xl max-h-[90vh] rounded-2xl overflow-hidden border border-white/20 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                      {freeVerifs.find((v) => v.token === expandedPrint) && (
+                        <img src={freeVerifs.find((v) => v.token === expandedPrint)!.printBase64} alt="print" className="w-full h-auto object-contain max-h-[85vh]" />
+                      )}
+                      <button onClick={() => setExpandedPrint(null)} className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/60 text-white font-bold hover:bg-black/80 transition">✕</button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -530,22 +639,30 @@ export default function AdminPage() {
                 {dlMsg && <p className={`text-sm ${dlMsg.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{dlMsg}</p>}
                 <div className="space-y-4">
                   {DOWNLOAD_PRODUCTS.map((prod) => (
-                    <div key={prod.id} className="rounded-[24px] border border-white/10 bg-white/5 p-6">
-                      <h3 className="font-black mb-4">{prod.label}</h3>
+                    <div key={prod.id} className={`rounded-[24px] border bg-white/5 p-6 ${prod.id === "free-key" ? "border-green-500/20 bg-green-500/5" : "border-white/10"}`}>
+                      <div className="flex items-center gap-2 mb-4">
+                        <h3 className="font-black">{prod.label}</h3>
+                        {prod.id === "free-key" && <span className="px-2 py-0.5 rounded-lg bg-green-500/20 text-green-400 text-xs font-bold">entregue na aprovação</span>}
+                      </div>
                       <div className="flex gap-3">
                         <input
-                          type="url"
+                          type={prod.inputType ?? "text"}
                           value={downloads[prod.id] ?? ""}
                           onChange={(e) => setDownloads((prev) => ({ ...prev, [prod.id]: e.target.value }))}
-                          placeholder="https://drive.google.com/... ou outro link"
-                          className="flex-1 px-4 py-3 rounded-xl bg-black/40 border border-white/10 text-white placeholder-zinc-600 focus:outline-none focus:border-white/30 transition text-sm"
+                          placeholder={prod.placeholder}
+                          className="flex-1 px-4 py-3 rounded-xl bg-black/40 border border-white/10 text-white placeholder-zinc-600 focus:outline-none focus:border-white/30 transition text-sm font-mono"
                         />
                         <button onClick={() => saveDownload(prod.id)} className="px-6 py-3 rounded-xl bg-white text-black font-black hover:scale-[1.02] transition shrink-0 text-sm">
                           Salvar
                         </button>
                       </div>
                       {downloads[prod.id] && (
-                        <p className="text-zinc-500 text-xs mt-2">Atual: <a href={downloads[prod.id]} target="_blank" rel="noopener noreferrer" className="text-white hover:underline">{downloads[prod.id]}</a></p>
+                        <p className="text-zinc-500 text-xs mt-2">
+                          {prod.inputType === "url"
+                            ? <span>Atual: <a href={downloads[prod.id]} target="_blank" rel="noopener noreferrer" className="text-white hover:underline">{downloads[prod.id]}</a></span>
+                            : <span>Chave configurada: <span className="text-green-400 font-mono font-bold">{downloads[prod.id]}</span></span>
+                          }
+                        </p>
                       )}
                     </div>
                   ))}
