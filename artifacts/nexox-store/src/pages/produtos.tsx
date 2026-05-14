@@ -1,13 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
 import { QRCodeSVG } from "qrcode.react";
-import { generatePixPayload } from "@/lib/pix";
 import { useCart } from "@/contexts/CartContext";
 import { CartButton } from "@/components/CartSidebar";
 
-const PIX_KEY = "9773c174-4a12-4099-9232-2ee3b79add8f";
-const MERCHANT_NAME = "NEXOX GROUP";
-const MERCHANT_CITY = "SAO PAULO";
 const BASE = () => import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function priceToNumber(price: string): number {
@@ -21,6 +17,7 @@ type ChatMsg = { id: number; senderType: string; senderName: string; message: st
 type BuyModal =
   | { step: "terms"; product: "rage" | "lite"; plan: Plan }
   | { step: "pix"; product: "rage" | "lite"; plan: Plan }
+  | { step: "qr"; product: "rage" | "lite"; plan: Plan; token: string; mpQrCode: string }
   | { step: "pending"; token: string; plan: Plan; product: "rage" | "lite" }
   | { step: "key"; key: string; plan: Plan; product: "rage" | "lite"; downloadUrl?: string }
   | null;
@@ -49,6 +46,8 @@ type CustomModal = {
   sending: boolean;
   loading: boolean;
   error: string;
+  mpQrCode: string | null;
+  mpLoading: boolean;
 } | null;
 
 const ragePlans: Plan[] = [
@@ -152,9 +151,31 @@ export default function ProdutosPage() {
         { id: data.id, token: data.token, planName: buyModal.plan.name, product: buyModal.product, price: buyModal.plan.price, date: new Date().toISOString() },
         ...pending,
       ]));
-      setBuyModal({ step: "pending", token: data.token, plan: buyModal.plan, product: buyModal.product });
+      if (data.mpQrCode) {
+        setBuyModal({ step: "qr", product: buyModal.product, plan: buyModal.plan, token: data.token, mpQrCode: data.mpQrCode });
+      } else {
+        setBuyModal({ step: "pending", token: data.token, plan: buyModal.plan, product: buyModal.product });
+      }
     } catch { setError("Erro de conexão. Tente novamente."); } finally { setLoading(false); }
   };
+
+  useEffect(() => {
+    if (buyModal?.step !== "qr") return;
+    const token = buyModal.token;
+    const plan = buyModal.plan;
+    const product = buyModal.product;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${BASE()}/api/purchases/status?token=${token}`);
+        const data = await res.json();
+        if (data.status === "confirmed" && data.keyValue) {
+          clearInterval(interval);
+          setBuyModal({ step: "key", key: data.keyValue, plan, product, downloadUrl: data.downloadUrl ?? undefined });
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [buyModal?.step === "qr" ? buyModal.token : null]);
 
   const copyKey = (key: string) => {
     navigator.clipboard.writeText(key);
@@ -168,8 +189,25 @@ export default function ProdutosPage() {
 
   const openCustomWizard = (pkg: CustomPkg) => {
     const user = (() => { try { return JSON.parse(localStorage.getItem("nexox_logged_user") ?? "null"); } catch { return null; } })();
-    setCustomModal({ pkg, step: "info", clientName: user?.username ?? "", clientEmail: user?.email ?? "", projectName: "", logoBase64: null, referenceBase64: null, orderId: null, clientToken: null, chatMessages: [], chatInput: "", sending: false, loading: false, error: "" });
+    setCustomModal({ pkg, step: "info", clientName: user?.username ?? "", clientEmail: user?.email ?? "", projectName: "", logoBase64: null, referenceBase64: null, orderId: null, clientToken: null, chatMessages: [], chatInput: "", sending: false, loading: false, error: "", mpQrCode: null, mpLoading: false });
   };
+
+  useEffect(() => {
+    if (customModal?.step !== "pix" || customModal.mpQrCode || customModal.mpLoading) return;
+    const name = customModal.clientName.trim() || "Cliente";
+    const { pkg } = customModal;
+    updateCustomModal({ mpLoading: true, error: "" });
+    fetch(`${BASE()}/api/payments/generate-pix`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: pkg.amount, description: `NEXOX Custom - ${pkg.name}`, buyerName: name }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.mpQrCode) updateCustomModal({ mpQrCode: data.mpQrCode, mpLoading: false });
+        else updateCustomModal({ mpLoading: false, error: data.error ?? "Erro ao gerar PIX." });
+      })
+      .catch(() => updateCustomModal({ mpLoading: false, error: "Erro ao gerar PIX. Tente novamente." }));
+  }, [customModal?.step]);
 
   const updateCustomModal = (patch: Partial<NonNullable<CustomModal>>) => {
     setCustomModal((prev) => prev ? { ...prev, ...patch } : prev);
@@ -411,6 +449,12 @@ export default function ProdutosPage() {
                     <h2 className="text-2xl font-black">Pagar via PIX</h2>
                   </>
                 )}
+                {buyModal.step === "qr" && (
+                  <>
+                    <p className="text-xs text-zinc-500 mb-1">{buyModal.product.toUpperCase()} — {buyModal.plan.name}</p>
+                    <h2 className="text-2xl font-black text-green-400">PIX Gerado!</h2>
+                  </>
+                )}
                 {buyModal.step === "pending" && (
                   <>
                     <p className="text-xs text-zinc-500 mb-1">{buyModal.product.toUpperCase()} — {buyModal.plan.name}</p>
@@ -472,8 +516,6 @@ export default function ProdutosPage() {
                 const orig = priceToNumber(buyModal.plan.price);
                 const final = applyDiscount(orig);
                 const hasDiscount = couponData !== null;
-                const txId = `NEXOX${buyModal.plan.planId.toUpperCase().replace(/-/g, "")}`;
-                const pixPayload = generatePixPayload({ pixKey: PIX_KEY, amount: final, merchantName: MERCHANT_NAME, merchantCity: MERCHANT_CITY, txId });
                 return (
                   <div className="space-y-4">
                     <div className="rounded-2xl bg-white/5 border border-white/10 p-4 flex items-center justify-between">
@@ -497,17 +539,13 @@ export default function ProdutosPage() {
                       {couponError && <p className="text-red-400 text-xs mt-1">{couponError}</p>}
                       {couponData && <p className="text-green-400 text-xs mt-1">✓ Cupom {couponData.code} aplicado!</p>}
                     </div>
-                    <div className="flex flex-col items-center gap-2">
-                      <p className="text-zinc-400 text-sm">Escaneie com o app do seu banco:</p>
-                      <div className="p-4 rounded-2xl bg-white shadow-2xl">
-                        <QRCodeSVG value={pixPayload} size={180} bgColor="#ffffff" fgColor="#000000" level="M" />
+                    <div className="rounded-2xl bg-zinc-900 border border-white/10 p-4 flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center shrink-0">
+                        <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" /></svg>
                       </div>
-                    </div>
-                    <div>
-                      <p className="text-zinc-400 text-xs mb-2">Ou copie a chave PIX:</p>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 font-mono text-xs text-white truncate">{PIX_KEY}</div>
-                        <button onClick={() => copyPix(PIX_KEY)} className={`px-3 py-2 rounded-xl font-bold text-xs transition shrink-0 ${copied ? "bg-green-500 text-white" : "bg-zinc-700 hover:bg-zinc-600"}`}>{copied ? "Copiado!" : "Copiar"}</button>
+                      <div>
+                        <p className="text-white text-sm font-bold">QR Code Mercado Pago</p>
+                        <p className="text-zinc-400 text-xs">Informe seu nome e clique em Gerar meu PIX para receber o QR Code oficial do MP.</p>
                       </div>
                     </div>
                     <div>
@@ -516,9 +554,43 @@ export default function ProdutosPage() {
                     </div>
                     {error && <p className="text-red-400 text-sm">{error}</p>}
                     <button onClick={handleConfirmPayment} disabled={loading} className="w-full py-4 rounded-2xl bg-white text-black font-black hover:scale-[1.02] transition disabled:opacity-50">
-                      {loading ? "Registrando..." : "Já enviei o PIX →"}
+                      {loading ? "Gerando PIX..." : "Gerar meu PIX →"}
                     </button>
                     <button onClick={closeBuyModal} className="w-full text-center text-zinc-500 text-sm hover:text-white transition">← Voltar</button>
+                  </div>
+                );
+              })()}
+              {buyModal.step === "qr" && (() => {
+                const { mpQrCode, plan, token } = buyModal;
+                return (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl bg-green-500/10 border border-green-500/20 p-3 flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
+                      <p className="text-green-300 text-sm font-bold">Aguardando pagamento… a key será liberada automaticamente!</p>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 border border-white/10 p-4 flex items-center justify-between">
+                      <div><p className="text-zinc-400 text-xs mb-0.5">Plano</p><p className="font-black text-lg">{plan.name}</p></div>
+                      <p className="text-2xl font-black">{plan.price}</p>
+                    </div>
+                    <div className="flex flex-col items-center gap-2">
+                      <p className="text-zinc-400 text-sm">Escaneie com o app do seu banco:</p>
+                      <div className="p-4 rounded-2xl bg-white shadow-2xl">
+                        <QRCodeSVG value={mpQrCode} size={180} bgColor="#ffffff" fgColor="#000000" level="M" />
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-zinc-400 text-xs mb-2">Ou copie o código PIX Copia e Cola:</p>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 font-mono text-xs text-white truncate">{mpQrCode.slice(0, 40)}…</div>
+                        <button onClick={() => copyPix(mpQrCode)} className={`px-3 py-2 rounded-xl font-bold text-xs transition shrink-0 ${copied ? "bg-green-500 text-white" : "bg-zinc-700 hover:bg-zinc-600"}`}>{copied ? "Copiado!" : "Copiar"}</button>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-zinc-900 border border-white/10 p-3 text-xs text-zinc-400 text-center">
+                      Verificando pagamento automaticamente a cada 5 segundos…
+                    </div>
+                    <Link to="/minhas-compras" onClick={closeBuyModal} className="block w-full py-3 rounded-2xl border border-white/10 hover:bg-white/10 transition text-center text-sm font-bold">
+                      Acompanhar em Minhas Compras
+                    </Link>
                   </div>
                 );
               })()}
@@ -693,35 +765,42 @@ export default function ProdutosPage() {
                 </div>
               )}
 
-              {customModal.step === "pix" && (() => {
-                const pixPayload = generatePixPayload({ pixKey: PIX_KEY, amount: customModal.pkg.amount, merchantName: MERCHANT_NAME, merchantCity: MERCHANT_CITY, txId: `NEXOX${customModal.pkg.id.toUpperCase().replace(/-/g, "")}` });
-                return (
-                  <div className="space-y-4">
-                    <div className="rounded-2xl bg-white/5 border border-white/10 p-4 flex justify-between items-center">
-                      <div><p className="text-xs text-zinc-500 mb-0.5">Pacote</p><p className="font-black">{customModal.pkg.name}</p><p className="text-xs text-zinc-500 mt-0.5">Cheat: {customModal.projectName}</p></div>
-                      <p className="text-2xl font-black">{customModal.pkg.price}</p>
-                    </div>
-                    <div className="flex flex-col items-center gap-2">
-                      <p className="text-zinc-400 text-sm">Escaneie com o app do seu banco:</p>
-                      <div className="p-4 rounded-2xl bg-white shadow-2xl">
-                        <QRCodeSVG value={pixPayload} size={160} bgColor="#ffffff" fgColor="#000000" level="M" />
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-zinc-400 text-xs mb-2">Ou copie a chave PIX:</p>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 font-mono text-xs text-white truncate">{PIX_KEY}</div>
-                        <button onClick={() => { navigator.clipboard.writeText(PIX_KEY); }} className="px-3 py-2 rounded-xl bg-zinc-700 hover:bg-zinc-600 font-bold text-xs transition">Copiar</button>
-                      </div>
-                    </div>
-                    {customModal.error && <p className="text-red-400 text-sm">{customModal.error}</p>}
-                    <button onClick={submitCustomOrder} disabled={customModal.loading} className="w-full py-4 rounded-2xl bg-white text-black font-black hover:scale-[1.02] transition disabled:opacity-50">
-                      {customModal.loading ? "Criando pedido..." : "Já paguei — Enviar Pedido"}
-                    </button>
-                    <button onClick={() => updateCustomModal({ step: "reference" })} className="w-full text-center text-zinc-500 text-sm hover:text-white transition">← Voltar</button>
+              {customModal.step === "pix" && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl bg-white/5 border border-white/10 p-4 flex justify-between items-center">
+                    <div><p className="text-xs text-zinc-500 mb-0.5">Pacote</p><p className="font-black">{customModal.pkg.name}</p><p className="text-xs text-zinc-500 mt-0.5">Cheat: {customModal.projectName}</p></div>
+                    <p className="text-2xl font-black">{customModal.pkg.price}</p>
                   </div>
-                );
-              })()}
+                  {customModal.mpLoading && (
+                    <div className="flex flex-col items-center gap-3 py-6">
+                      <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+                      <p className="text-zinc-400 text-sm">Gerando PIX Mercado Pago…</p>
+                    </div>
+                  )}
+                  {!customModal.mpLoading && customModal.mpQrCode && (
+                    <>
+                      <div className="flex flex-col items-center gap-2">
+                        <p className="text-zinc-400 text-sm">Escaneie com o app do seu banco:</p>
+                        <div className="p-4 rounded-2xl bg-white shadow-2xl">
+                          <QRCodeSVG value={customModal.mpQrCode} size={160} bgColor="#ffffff" fgColor="#000000" level="M" />
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-zinc-400 text-xs mb-2">Ou copie o código PIX Copia e Cola:</p>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 font-mono text-xs text-white truncate">{customModal.mpQrCode.slice(0, 40)}…</div>
+                          <button onClick={() => { navigator.clipboard.writeText(customModal.mpQrCode!); }} className="px-3 py-2 rounded-xl bg-zinc-700 hover:bg-zinc-600 font-bold text-xs transition">Copiar</button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {customModal.error && <p className="text-red-400 text-sm">{customModal.error}</p>}
+                  <button onClick={submitCustomOrder} disabled={customModal.loading || customModal.mpLoading || !customModal.mpQrCode} className="w-full py-4 rounded-2xl bg-white text-black font-black hover:scale-[1.02] transition disabled:opacity-50">
+                    {customModal.loading ? "Criando pedido..." : "Já paguei — Enviar Pedido"}
+                  </button>
+                  <button onClick={() => updateCustomModal({ step: "reference" })} className="w-full text-center text-zinc-500 text-sm hover:text-white transition">← Voltar</button>
+                </div>
+              )}
 
               {customModal.step === "chat" && (
                 <div className="flex flex-col" style={{ height: "420px" }}>

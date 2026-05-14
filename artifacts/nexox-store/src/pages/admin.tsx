@@ -70,6 +70,27 @@ export default function AdminPage() {
   const [freeMsg, setFreeMsg] = useState("");
   const [expandedPrint, setExpandedPrint] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const lastPendingCountRef = useRef<number>(-1);
+
+  const playNotificationSound = () => {
+    try {
+      const ctx = new AudioContext();
+      const times = [0, 0.15, 0.3];
+      const freqs = [880, 1100, 1320];
+      times.forEach((t, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freqs[i]!, ctx.currentTime + t);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.3);
+        osc.start(ctx.currentTime + t);
+        osc.stop(ctx.currentTime + t + 0.3);
+      });
+    } catch {}
+  };
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
   const headers = { "x-admin-secret": secret };
@@ -177,6 +198,32 @@ export default function AdminPage() {
     if (tab === "pendentes") fetchPendingPurchases();
     if (tab === "free") fetchFreeVerifs();
   }, [tab, authed]);
+
+  useEffect(() => {
+    if (!authed) return;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${BASE}/api/admin/purchases`, { headers: { "x-admin-secret": secret } });
+        if (!res.ok) return;
+        const data: PendingPurchase[] = await res.json();
+        const newCount = data.filter((p) => p.status === "pending").length;
+        if (lastPendingCountRef.current === -1) {
+          lastPendingCountRef.current = newCount;
+        } else if (newCount > lastPendingCountRef.current) {
+          playNotificationSound();
+          lastPendingCountRef.current = newCount;
+          setPendingPurchases(data);
+        } else {
+          lastPendingCountRef.current = newCount;
+        }
+      } catch {}
+    };
+
+    poll();
+    const interval = setInterval(poll, 30_000);
+    return () => clearInterval(interval);
+  }, [authed, secret]);
 
   useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [selectedOrder?.messages]);
 

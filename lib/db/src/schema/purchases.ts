@@ -12,6 +12,8 @@ export const pendingPurchasesTable = pgTable("pending_purchases", {
   status: text("status").notNull().default("pending"),
   keyValue: text("key_value"),
   downloadUrl: text("download_url"),
+  mpPaymentId: text("mp_payment_id"),
+  mpQrCode: text("mp_qr_code"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   confirmedAt: timestamp("confirmed_at"),
 });
